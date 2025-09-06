@@ -250,8 +250,37 @@ def save_search_results_to_file(results, filename="search_results.txt", fetch_fu
         return ""
 
     def split_into_chunks(text, chunk_size=100):
-        words = text.split()
-        return [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
+        """
+        Split text into chunks of about `chunk_size` words,
+        rounding to the nearest sentence boundary (full stop).
+        Skips chunks of 5 words or fewer.
+        """
+        # Split into sentences (keeps ., ?, ! as delimiters)
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        chunks, current_chunk, current_len = [], [], 0
+
+        for sentence in sentences:
+            words = sentence.split()
+            if not words:
+                continue
+            sentence_len = len(words)
+
+            # If adding this sentence would push us far past chunk_size, start a new chunk
+            if current_len + sentence_len > chunk_size and current_chunk:
+                # ✅ Only keep if chunk has > 5 words
+                if sum(len(c.split()) for c in current_chunk) > 5:
+                    chunks.append(" ".join(current_chunk).strip())
+                current_chunk, current_len = [], 0
+
+            current_chunk.append(sentence)
+            current_len += sentence_len
+
+        # Add the last chunk (if > 5 words)
+        if current_chunk and sum(len(c.split()) for c in current_chunk) > 5:
+            chunks.append(" ".join(current_chunk).strip())
+
+        return chunks
+
 
     with ThreadPoolExecutor(max_workers=10) as executor:
         sanitized_texts = list(executor.map(fetch_and_sanitize, results))
@@ -267,36 +296,43 @@ def save_search_results_to_file(results, filename="search_results.txt", fetch_fu
 
 
 if __name__ == "__main__":
-    # Step 0: Read user prompt
+    # Step 0: Read all user prompts from query.txt (one per line)
     with open("query.txt", "r", encoding="utf-8") as f:
-        user_prompt = f.read().strip()
+        user_prompts = [line.strip() for line in f if line.strip()]
 
-    # Step 1: Generate multiple search queries
-    query_list = generate_multiple_queries(user_prompt, n=100)
+    # Loop through each prompt separately
+    for idx, user_prompt in enumerate(user_prompts, start=1):
+        print(f"\n=== Processing dataset {idx}: '{user_prompt}' ===")
 
-    # Step 1b: Run searches
-    all_results = []
-    for q in query_list:
-        sanitized_q = sanitize_query(q)
-        results = enhanced_search(sanitized_q, max_results=1000)
-        all_results.extend(results)
+        # Step 1: Generate multiple search queries
+        query_list = generate_multiple_queries(user_prompt, n=100)
 
-    # Step 2: Deduplicate by URL
-    unique_results = {r["href"]: r for r in all_results if "href" in r}.values()
-    search_results = list(unique_results)
+        # Step 1b: Run searches
+        all_results = []
+        for q in query_list:
+            sanitized_q = sanitize_query(q)
+            results = enhanced_search(sanitized_q, max_results=1000)
+            all_results.extend(results)
 
-    # Step 2b: Smart deduplication by content
-    search_results = smart_deduplicate(search_results)
+        # Step 2: Deduplicate by URL
+        unique_results = {r["href"]: r for r in all_results if "href" in r}.values()
+        search_results = list(unique_results)
 
-    # Step 3: Save sanitized content
-    CHUNK_SIZE = 100  # change here if you want bigger/smaller chunks
-    save_search_results_to_file(search_results, fetch_full_content=True, chunk_size=CHUNK_SIZE)
+        # Step 2b: Smart deduplication by content
+        search_results = smart_deduplicate(search_results)
 
-    # Step 4: Count words in saved dataset
-    with open("search_results.txt", "r", encoding="utf-8") as f:
-        saved_texts = f.read().split("\n")
-    total_words = count_words_in_texts(saved_texts)
-    print(f"Total words in dataset: {total_words}")
+        # Step 3: Save sanitized content (unique file per dataset)
+        CHUNK_SIZE = 100
+        out_file = f"dataset_{idx:02d}.txt"  # dataset_01.txt, dataset_02.txt, etc.
+        save_search_results_to_file(search_results, filename=out_file,
+                                    fetch_full_content=True, chunk_size=CHUNK_SIZE)
+
+        # Step 4: Count words in saved dataset
+        with open(out_file, "r", encoding="utf-8") as f:
+            saved_texts = f.read().split("\n")
+        total_words = count_words_in_texts(saved_texts)
+        print(f"[DONE] Dataset {idx} saved to '{out_file}' | Total words: {total_words}")
+
 
 
 
